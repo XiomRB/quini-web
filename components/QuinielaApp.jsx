@@ -1,7 +1,24 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { CalendarDays, Target, Trophy, Plus, Trash2, RefreshCw, Check, Loader2, Medal, Download, Lock, Unlock, X } from 'lucide-react';
+import {
+  CalendarDays,
+  Target,
+  Trophy,
+  Plus,
+  Trash2,
+  RefreshCw,
+  Check,
+  Loader2,
+  Medal,
+  Download,
+  Lock,
+  Unlock,
+  X,
+  Pencil,
+  FileText,
+  Ban,
+} from 'lucide-react';
 import { storageGet, storageSet } from '../lib/storage';
 
 const COLORS = {
@@ -16,6 +33,18 @@ const COLORS = {
   lineDark: 'rgba(22,48,42,0.12)',
 };
 
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+
+const formatFecha = (fecha) => {
+  if (!fecha) return '';
+  const parts = fecha.split('-');
+  if (parts.length !== 3) return fecha;
+  const [y, m, d] = parts;
+  const mi = Number(m) - 1;
+  if (mi < 0 || mi > 11 || !d) return fecha;
+  return `${d} ${MESES[mi]}`;
+};
+
 const slugify = (name) =>
   name
     .trim()
@@ -25,6 +54,17 @@ const slugify = (name) =>
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 
+// Puntos de UN partido para UNA predicción. null = el partido aún no tiene resultado.
+const matchPoints = (pick, m) => {
+  if (m.scoreA === null || m.scoreB === null) return null;
+  if (!pick || pick.a === '' || pick.b === '' || pick.a === undefined || pick.b === undefined) return 0;
+  const pa = Number(pick.a);
+  const pb = Number(pick.b);
+  if (pa === m.scoreA && pb === m.scoreB) return 5;
+  if (Math.sign(pa - pb) === Math.sign(m.scoreA - m.scoreB)) return 3;
+  return 0;
+};
+
 // 5 pts por marcador exacto, 3 pts por acertar solo el resultado (ganador/empate)
 const scorePlayer = (picks, matchList) => {
   let points = 0,
@@ -32,22 +72,24 @@ const scorePlayer = (picks, matchList) => {
     aciertos = 0,
     jugados = 0;
   matchList.forEach((m) => {
-    if (m.scoreA === null || m.scoreB === null) return;
-    const p = picks[m.id];
-    if (!p || p.a === '' || p.b === '' || p.a === undefined || p.b === undefined) return;
+    const pts = matchPoints(picks[m.id], m);
+    if (pts === null) return;
     jugados++;
-    const pa = Number(p.a);
-    const pb = Number(p.b);
-    if (pa === m.scoreA && pb === m.scoreB) {
-      points += 5;
+    if (pts === 5) {
       exactos++;
       aciertos++;
-    } else if (Math.sign(pa - pb) === Math.sign(m.scoreA - m.scoreB)) {
-      points += 3;
+    } else if (pts === 3) {
       aciertos++;
     }
+    points += pts;
   });
   return { points, exactos, aciertos, jugados };
+};
+
+const csvEscape = (val) => {
+  const s = String(val ?? '');
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
 };
 
 const ScoreBox = ({ value, onChange, disabled, accent }) => (
@@ -92,7 +134,7 @@ export default function App() {
   const [pinError, setPinError] = useState('');
   const [pinSaving, setPinSaving] = useState(false);
 
-  const [newMatch, setNewMatch] = useState({ teamA: '', teamB: '', fase: '', fecha: '' });
+  const [newMatch, setNewMatch] = useState({ teamA: '', teamB: '', fase: '', fecha: '', hora: '' });
   const [resultInputs, setResultInputs] = useState({});
   const [savingResult, setSavingResult] = useState(null);
 
@@ -107,6 +149,7 @@ export default function App() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [tablaLoading, setTablaLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportingCSV, setExportingCSV] = useState(false);
 
   const loadMatches = useCallback(async () => {
     try {
@@ -214,16 +257,18 @@ export default function App() {
       teamA: newMatch.teamA.trim(),
       teamB: newMatch.teamB.trim(),
       fase: newMatch.fase.trim(),
-      fecha: newMatch.fecha.trim(),
+      fecha: newMatch.fecha,
+      hora: newMatch.hora,
       scoreA: null,
       scoreB: null,
+      predictionsClosed: false,
     };
     const updated = [...matches, match];
     try {
       const res = await storageSet('matches', JSON.stringify(updated));
       if (!res) throw new Error('fail');
       setMatches(updated);
-      setNewMatch({ teamA: '', teamB: '', fase: '', fecha: '' });
+      setNewMatch({ teamA: '', teamB: '', fase: '', fecha: '', hora: '' });
     } catch {
       setError('No se pudo guardar el partido. Intenta de nuevo.');
     }
@@ -240,27 +285,32 @@ export default function App() {
     }
   };
 
-  const saveResult = async (id) => {
-    const input = resultInputs[id] || { a: '', b: '' };
-    setSavingResult(id);
-    const updated = matches.map((m) =>
-      m.id === id
-        ? {
-            ...m,
-            scoreA: input.a === '' ? null : Number(input.a),
-            scoreB: input.b === '' ? null : Number(input.b),
-          }
-        : m
-    );
+  // Guarda cambios genéricos sobre un partido (resultado, edición, cierre de predicciones)
+  const updateMatch = async (id, fields) => {
+    const updated = matches.map((m) => (m.id === id ? { ...m, ...fields } : m));
     try {
       const res = await storageSet('matches', JSON.stringify(updated));
       if (!res) throw new Error('fail');
       setMatches(updated);
+      return true;
     } catch {
-      setError('No se pudo guardar el resultado.');
-    } finally {
-      setSavingResult(null);
+      setError('No se pudo guardar el cambio.');
+      return false;
     }
+  };
+
+  const saveResult = async (id) => {
+    const input = resultInputs[id] || { a: '', b: '' };
+    setSavingResult(id);
+    await updateMatch(id, {
+      scoreA: input.a === '' ? null : Number(input.a),
+      scoreB: input.b === '' ? null : Number(input.b),
+    });
+    setSavingResult(null);
+  };
+
+  const togglePredictions = async (id, currentlyClosed) => {
+    await updateMatch(id, { predictionsClosed: !currentlyClosed });
   };
 
   // ---------- Mis Predicciones ----------
@@ -347,6 +397,7 @@ export default function App() {
     }
   };
 
+  // ---------- Exportar (solo organizador) ----------
   const exportData = async () => {
     setExporting(true);
     setError(null);
@@ -387,6 +438,58 @@ export default function App() {
     }
   };
 
+  const exportCSV = async () => {
+    setExportingCSV(true);
+    setError(null);
+    try {
+      const header = ['Jugador'];
+      matches.forEach((m) => {
+        const label = `${m.teamA} vs ${m.teamB}`;
+        header.push(`${label} - Predicción`);
+        header.push(`${label} - Puntos`);
+      });
+      header.push('Total');
+      const rows = [header];
+
+      for (const player of players) {
+        let picks = {};
+        try {
+          const res = await storageGet(`predictions:${player.key}`);
+          picks = res ? JSON.parse(res.value) : {};
+        } catch {
+          picks = {};
+        }
+        const row = [player.name];
+        let total = 0;
+        matches.forEach((m) => {
+          const p = picks[m.id];
+          const hasPick = p && p.a !== '' && p.b !== '' && p.a !== undefined && p.b !== undefined;
+          row.push(hasPick ? `${p.a}-${p.b}` : '');
+          const pts = matchPoints(p, m);
+          row.push(pts === null ? '' : String(pts));
+          if (pts) total += pts;
+        });
+        row.push(String(total));
+        rows.push(row);
+      }
+
+      const csv = rows.map((r) => r.map(csvEscape).join(',')).join('\r\n');
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `quiniela-predicciones-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      setError('No se pudo generar el CSV.');
+    } finally {
+      setExportingCSV(false);
+    }
+  };
+
   useEffect(() => {
     if (tab === 'tabla' && !loading) computeLeaderboard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -415,7 +518,7 @@ export default function App() {
 
       <div className="max-w-2xl mx-auto px-4 py-6 sm:px-6">
         {/* Header */}
-        <div className="flex items-start justify-between gap-4 mb-5">
+        <div className="flex items-start justify-between gap-4 mb-5 flex-wrap">
           <div>
             <p
               className="quiniela-display text-xs sm:text-sm uppercase tracking-[0.3em]"
@@ -434,30 +537,44 @@ export default function App() {
               {playedCount === 1 ? '' : 's'} jugado{playedCount === 1 ? '' : 's'}
             </p>
           </div>
-          <div className="flex flex-col gap-2 shrink-0">
+          <div className="flex flex-wrap gap-2 justify-end shrink-0">
             <button
               onClick={refreshAll}
               disabled={refreshing}
-              className="flex items-center gap-2 text-xs sm:text-sm px-3 py-2 rounded-md"
+              className="flex items-center gap-2 text-xs sm:text-sm px-3 py-2 rounded-md whitespace-nowrap"
               style={{ background: COLORS.pitch, color: COLORS.chalk, border: `1px solid ${COLORS.line}` }}
             >
               <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
               Actualizar
             </button>
-            <button
-              onClick={exportData}
-              disabled={exporting}
-              className="flex items-center gap-2 text-xs sm:text-sm px-3 py-2 rounded-md"
-              style={{ background: COLORS.pitch, color: COLORS.chalk, border: `1px solid ${COLORS.line}` }}
-              title="Descargar respaldo en JSON"
-            >
-              {exporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-              Respaldo
-            </button>
+            {isAdmin && (
+              <>
+                <button
+                  onClick={exportData}
+                  disabled={exporting}
+                  className="flex items-center gap-2 text-xs sm:text-sm px-3 py-2 rounded-md whitespace-nowrap"
+                  style={{ background: COLORS.pitch, color: COLORS.chalk, border: `1px solid ${COLORS.line}` }}
+                  title="Descargar respaldo en JSON"
+                >
+                  {exporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                  Respaldo
+                </button>
+                <button
+                  onClick={exportCSV}
+                  disabled={exportingCSV}
+                  className="flex items-center gap-2 text-xs sm:text-sm px-3 py-2 rounded-md whitespace-nowrap"
+                  style={{ background: COLORS.pitch, color: COLORS.chalk, border: `1px solid ${COLORS.line}` }}
+                  title="Descargar predicciones y puntos en CSV"
+                >
+                  {exportingCSV ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+                  CSV
+                </button>
+              </>
+            )}
             {isAdmin ? (
               <button
                 onClick={lockAdmin}
-                className="flex items-center gap-2 text-xs sm:text-sm px-3 py-2 rounded-md"
+                className="flex items-center gap-2 text-xs sm:text-sm px-3 py-2 rounded-md whitespace-nowrap"
                 style={{ background: COLORS.pitchLight, color: COLORS.chalk, border: `1px solid ${COLORS.line}` }}
                 title="Salir del modo organizador"
               >
@@ -471,7 +588,7 @@ export default function App() {
                   setPinError('');
                   setShowPinPrompt(true);
                 }}
-                className="flex items-center gap-2 text-xs sm:text-sm px-3 py-2 rounded-md"
+                className="flex items-center gap-2 text-xs sm:text-sm px-3 py-2 rounded-md whitespace-nowrap"
                 style={{ background: COLORS.pitch, color: COLORS.chalkDim, border: `1px solid ${COLORS.line}` }}
                 title="Acceso de organizador"
               >
@@ -527,6 +644,8 @@ export default function App() {
               saveResult={saveResult}
               savingResult={savingResult}
               deleteMatch={deleteMatch}
+              updateMatch={updateMatch}
+              togglePredictions={togglePredictions}
               newMatch={newMatch}
               setNewMatch={setNewMatch}
               addMatch={addMatch}
@@ -582,7 +701,7 @@ export default function App() {
             </div>
             <p className="text-xs mb-3" style={{ color: COLORS.pitchLight }}>
               {adminPin === null
-                ? 'Elige un PIN. Solo quien lo conozca podrá ver y editar la pestaña "Partidos".'
+                ? 'Elige un PIN. Solo quien lo conozca podrá ver y editar la pestaña "Partidos", y descargar los respaldos.'
                 : 'Ingresa el PIN para ver y editar los partidos.'}
             </p>
             <input
@@ -624,10 +743,46 @@ function PartidosTab({
   saveResult,
   savingResult,
   deleteMatch,
+  updateMatch,
+  togglePredictions,
   newMatch,
   setNewMatch,
   addMatch,
 }) {
+  const [editingId, setEditingId] = useState(null);
+  const [editInputs, setEditInputs] = useState({ teamA: '', teamB: '', fase: '', fecha: '', hora: '' });
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [togglingId, setTogglingId] = useState(null);
+
+  const startEdit = (m) => {
+    setEditingId(m.id);
+    setEditInputs({ teamA: m.teamA, teamB: m.teamB, fase: m.fase || '', fecha: m.fecha || '', hora: m.hora || '' });
+  };
+
+  const cancelEdit = () => setEditingId(null);
+
+  const saveEdit = async (id) => {
+    if (!editInputs.teamA.trim() || !editInputs.teamB.trim()) return;
+    setSavingEdit(true);
+    const ok = await updateMatch(id, {
+      teamA: editInputs.teamA.trim(),
+      teamB: editInputs.teamB.trim(),
+      fase: editInputs.fase.trim(),
+      fecha: editInputs.fecha,
+      hora: editInputs.hora,
+    });
+    setSavingEdit(false);
+    if (ok) setEditingId(null);
+  };
+
+  const handleToggle = async (m) => {
+    setTogglingId(m.id);
+    await togglePredictions(m.id, !!m.predictionsClosed);
+    setTogglingId(null);
+  };
+
+  const inputStyle = { border: `1px solid ${COLORS.lineDark}` };
+
   return (
     <div>
       <div className="mb-5 p-3 rounded-md" style={{ background: 'rgba(31,77,62,0.06)', border: `1px solid ${COLORS.lineDark}` }}>
@@ -640,30 +795,37 @@ function PartidosTab({
             value={newMatch.teamA}
             onChange={(e) => setNewMatch({ ...newMatch, teamA: e.target.value })}
             className="px-2 py-1.5 rounded text-sm"
-            style={{ border: `1px solid ${COLORS.lineDark}` }}
+            style={inputStyle}
           />
           <input
             placeholder="Equipo visitante"
             value={newMatch.teamB}
             onChange={(e) => setNewMatch({ ...newMatch, teamB: e.target.value })}
             className="px-2 py-1.5 rounded text-sm"
-            style={{ border: `1px solid ${COLORS.lineDark}` }}
+            style={inputStyle}
           />
         </div>
-        <div className="grid grid-cols-2 gap-2 mb-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-2">
           <input
             placeholder="Fase (ej. Grupo A)"
             value={newMatch.fase}
             onChange={(e) => setNewMatch({ ...newMatch, fase: e.target.value })}
             className="px-2 py-1.5 rounded text-sm"
-            style={{ border: `1px solid ${COLORS.lineDark}` }}
+            style={inputStyle}
           />
           <input
-            placeholder="Fecha / hora"
+            type="date"
             value={newMatch.fecha}
             onChange={(e) => setNewMatch({ ...newMatch, fecha: e.target.value })}
             className="px-2 py-1.5 rounded text-sm"
-            style={{ border: `1px solid ${COLORS.lineDark}` }}
+            style={inputStyle}
+          />
+          <input
+            type="time"
+            value={newMatch.hora}
+            onChange={(e) => setNewMatch({ ...newMatch, hora: e.target.value })}
+            className="px-2 py-1.5 rounded text-sm"
+            style={inputStyle}
           />
         </div>
         <button
@@ -685,54 +847,149 @@ function PartidosTab({
           {matches.map((m) => {
             const input = resultInputs[m.id] || { a: '', b: '' };
             const played = m.scoreA !== null && m.scoreB !== null;
+            const isEditing = editingId === m.id;
+            const closed = !!m.predictionsClosed;
+
             return (
-              <div
-                key={m.id}
-                className="flex items-center justify-between gap-2 py-2.5 px-2 rounded-md"
-                style={{ borderBottom: `1px solid ${COLORS.lineDark}` }}
-              >
-                <div className="min-w-0">
-                  {(m.fase || m.fecha) && (
-                    <p className="text-[10px] uppercase tracking-wide mb-0.5" style={{ color: COLORS.pitchLight }}>
-                      {[m.fase, m.fecha].filter(Boolean).join(' · ')}
-                    </p>
-                  )}
-                  <p className="quiniela-display text-sm sm:text-base uppercase truncate" style={{ color: COLORS.pitchDark }}>
-                    {m.teamA} <span style={{ color: COLORS.amber }}>vs</span> {m.teamB}
-                  </p>
-                  {played && (
-                    <p className="text-[10px] mt-0.5" style={{ color: COLORS.pitchLight }}>
-                      Resultado registrado
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <ScoreBox
-                    value={input.a}
-                    onChange={(v) => setResultInputs((prev) => ({ ...prev, [m.id]: { ...input, a: v } }))}
-                  />
-                  <span style={{ color: COLORS.pitchDark }}>-</span>
-                  <ScoreBox
-                    value={input.b}
-                    onChange={(v) => setResultInputs((prev) => ({ ...prev, [m.id]: { ...input, b: v } }))}
-                  />
-                  <button
-                    onClick={() => saveResult(m.id)}
-                    className="p-2 rounded-md"
-                    style={{ background: COLORS.pitchLight, color: COLORS.chalk }}
-                    title="Guardar resultado"
-                  >
-                    {savingResult === m.id ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-                  </button>
-                  <button
-                    onClick={() => deleteMatch(m.id)}
-                    className="p-2 rounded-md"
-                    style={{ background: 'rgba(231,111,81,0.12)', color: COLORS.coral }}
-                    title="Eliminar partido"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
+              <div key={m.id} className="py-2.5 px-2 rounded-md" style={{ borderBottom: `1px solid ${COLORS.lineDark}` }}>
+                {isEditing ? (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        placeholder="Equipo local"
+                        value={editInputs.teamA}
+                        onChange={(e) => setEditInputs({ ...editInputs, teamA: e.target.value })}
+                        className="px-2 py-1.5 rounded text-sm"
+                        style={inputStyle}
+                      />
+                      <input
+                        placeholder="Equipo visitante"
+                        value={editInputs.teamB}
+                        onChange={(e) => setEditInputs({ ...editInputs, teamB: e.target.value })}
+                        className="px-2 py-1.5 rounded text-sm"
+                        style={inputStyle}
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <input
+                        placeholder="Fase (ej. Grupo A)"
+                        value={editInputs.fase}
+                        onChange={(e) => setEditInputs({ ...editInputs, fase: e.target.value })}
+                        className="px-2 py-1.5 rounded text-sm"
+                        style={inputStyle}
+                      />
+                      <input
+                        type="date"
+                        value={editInputs.fecha}
+                        onChange={(e) => setEditInputs({ ...editInputs, fecha: e.target.value })}
+                        className="px-2 py-1.5 rounded text-sm"
+                        style={inputStyle}
+                      />
+                      <input
+                        type="time"
+                        value={editInputs.hora}
+                        onChange={(e) => setEditInputs({ ...editInputs, hora: e.target.value })}
+                        className="px-2 py-1.5 rounded text-sm"
+                        style={inputStyle}
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => saveEdit(m.id)}
+                        disabled={savingEdit || !editInputs.teamA.trim() || !editInputs.teamB.trim()}
+                        className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md quiniela-display uppercase tracking-wide disabled:opacity-40"
+                        style={{ background: COLORS.pitch, color: COLORS.chalk }}
+                      >
+                        {savingEdit ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                        Guardar
+                      </button>
+                      <button
+                        onClick={cancelEdit}
+                        className="text-sm px-3 py-1.5 rounded-md quiniela-display uppercase tracking-wide"
+                        style={{ background: 'transparent', color: COLORS.pitch, border: `1px solid ${COLORS.lineDark}` }}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="min-w-0">
+                      {(m.fase || m.fecha || m.hora) && (
+                        <p className="text-[10px] uppercase tracking-wide mb-0.5" style={{ color: COLORS.pitchLight }}>
+                          {[m.fase, formatFecha(m.fecha), m.hora].filter(Boolean).join(' · ')}
+                        </p>
+                      )}
+                      <p className="quiniela-display text-sm sm:text-base uppercase truncate" style={{ color: COLORS.pitchDark }}>
+                        {m.teamA} <span style={{ color: COLORS.amber }}>vs</span> {m.teamB}
+                      </p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        {played && (
+                          <p className="text-[10px]" style={{ color: COLORS.pitchLight }}>
+                            Resultado registrado
+                          </p>
+                        )}
+                        {closed && (
+                          <p className="text-[10px]" style={{ color: COLORS.coral }}>
+                            Predicciones cerradas
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                      <ScoreBox
+                        value={input.a}
+                        onChange={(v) => setResultInputs((prev) => ({ ...prev, [m.id]: { ...input, a: v } }))}
+                      />
+                      <span style={{ color: COLORS.pitchDark }}>-</span>
+                      <ScoreBox
+                        value={input.b}
+                        onChange={(v) => setResultInputs((prev) => ({ ...prev, [m.id]: { ...input, b: v } }))}
+                      />
+                      <button
+                        onClick={() => saveResult(m.id)}
+                        className="p-2 rounded-md"
+                        style={{ background: COLORS.pitchLight, color: COLORS.chalk }}
+                        title="Guardar resultado"
+                      >
+                        {savingResult === m.id ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                      </button>
+                      <button
+                        onClick={() => handleToggle(m)}
+                        className="p-2 rounded-md"
+                        style={{
+                          background: closed ? 'rgba(45,106,79,0.15)' : 'rgba(231,111,81,0.12)',
+                          color: closed ? COLORS.pitchLight : COLORS.coral,
+                        }}
+                        title={closed ? 'Volver a aceptar predicciones' : 'Cerrar predicciones para este partido'}
+                      >
+                        {togglingId === m.id ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : closed ? (
+                          <Unlock size={16} />
+                        ) : (
+                          <Ban size={16} />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => startEdit(m)}
+                        className="p-2 rounded-md"
+                        style={{ background: 'rgba(31,77,62,0.08)', color: COLORS.pitch }}
+                        title="Editar partido"
+                      >
+                        <Pencil size={16} />
+                      </button>
+                      <button
+                        onClick={() => deleteMatch(m.id)}
+                        className="p-2 rounded-md"
+                        style={{ background: 'rgba(231,111,81,0.12)', color: COLORS.coral }}
+                        title="Eliminar partido"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -796,6 +1053,16 @@ function PrediccionesTab({
     );
   }
 
+  // Orden: fecha descendente, y dentro del mismo día, hora ascendente.
+  const sortedMatches = [...matches].sort((a, b) => {
+    const fa = a.fecha || '';
+    const fb = b.fecha || '';
+    if (fa !== fb) return fb.localeCompare(fa);
+    const ha = a.hora || '';
+    const hb = b.hora || '';
+    return ha.localeCompare(hb);
+  });
+
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
@@ -807,11 +1074,13 @@ function PrediccionesTab({
         </button>
       </div>
       <div className="space-y-2">
-        {matches.map((m) => {
+        {sortedMatches.map((m) => {
           const matchPlayed = m.scoreA !== null && m.scoreB !== null;
           const pick = myPicks[m.id] || { a: '', b: '' };
           const pickLocked = !!pick.locked;
-          const locked = matchPlayed || pickLocked;
+          const closed = !!m.predictionsClosed;
+          const locked = matchPlayed || pickLocked || closed;
+          const pts = matchPoints(pick, m);
           return (
             <div
               key={m.id}
@@ -819,9 +1088,9 @@ function PrediccionesTab({
               style={{ borderBottom: `1px solid ${COLORS.lineDark}` }}
             >
               <div className="min-w-0">
-                {(m.fase || m.fecha) && (
+                {(m.fase || m.fecha || m.hora) && (
                   <p className="text-[10px] uppercase tracking-wide mb-0.5" style={{ color: COLORS.pitchLight }}>
-                    {[m.fase, m.fecha].filter(Boolean).join(' · ')}
+                    {[m.fase, formatFecha(m.fecha), m.hora].filter(Boolean).join(' · ')}
                   </p>
                 )}
                 <p className="quiniela-display text-sm sm:text-base uppercase truncate" style={{ color: COLORS.pitchDark }}>
@@ -829,11 +1098,18 @@ function PrediccionesTab({
                 </p>
                 {matchPlayed ? (
                   <p className="text-[10px] mt-0.5" style={{ color: COLORS.coral }}>
-                    Resultado ya registrado: {m.scoreA} - {m.scoreB}
+                    Resultado: {m.scoreA} - {m.scoreB}
+                    {pts !== null && (
+                      <span className="font-semibold"> · {pts > 0 ? `+${pts}` : pts} pts</span>
+                    )}
                   </p>
                 ) : pickLocked ? (
                   <p className="text-[10px] mt-0.5" style={{ color: COLORS.pitchLight }}>
                     Tu predicción ya está guardada y no se puede modificar
+                  </p>
+                ) : closed ? (
+                  <p className="text-[10px] mt-0.5" style={{ color: COLORS.coral }}>
+                    Las predicciones para este partido están cerradas
                   </p>
                 ) : null}
               </div>
