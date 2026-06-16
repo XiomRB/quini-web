@@ -844,7 +844,17 @@ function PartidosTab({
         </p>
       ) : (
         <div className="space-y-2">
-          {matches.map((m) => {
+          {[...matches]
+            .sort((a, b) => {
+              // Orden: fecha descendente, y dentro del mismo día, hora ascendente.
+              const fa = a.fecha || '';
+              const fb = b.fecha || '';
+              if (fa !== fb) return fb.localeCompare(fa);
+              const ha = a.hora || '';
+              const hb = b.hora || '';
+              return ha.localeCompare(hb);
+            })
+            .map((m) => {
             const input = resultInputs[m.id] || { a: '', b: '' };
             const played = m.scoreA !== null && m.scoreB !== null;
             const isEditing = editingId === m.id;
@@ -1013,6 +1023,8 @@ function PrediccionesTab({
   saved,
   switchPlayer,
 }) {
+  const [page, setPage] = useState(0);
+
   if (!activeName) {
     return (
       <div className="py-6 text-center">
@@ -1053,15 +1065,11 @@ function PrediccionesTab({
     );
   }
 
-  // Orden: fecha descendente, y dentro del mismo día, hora ascendente.
-  const sortedMatches = [...matches].sort((a, b) => {
-    const fa = a.fecha || '';
-    const fb = b.fecha || '';
-    if (fa !== fb) return fb.localeCompare(fa);
-    const ha = a.hora || '';
-    const hb = b.hora || '';
-    return ha.localeCompare(hb);
-  });
+  // Paginación: 8 partidos por página, manteniendo el orden actual de la lista.
+  const PAGE_SIZE = 8;
+  const totalPages = Math.max(1, Math.ceil(matches.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages - 1);
+  const pageMatches = matches.slice(currentPage * PAGE_SIZE, currentPage * PAGE_SIZE + PAGE_SIZE);
 
   return (
     <div>
@@ -1074,7 +1082,7 @@ function PrediccionesTab({
         </button>
       </div>
       <div className="space-y-2">
-        {sortedMatches.map((m) => {
+        {pageMatches.map((m) => {
           const matchPlayed = m.scoreA !== null && m.scoreB !== null;
           const pick = myPicks[m.id] || { a: '', b: '' };
           const pickLocked = !!pick.locked;
@@ -1130,6 +1138,30 @@ function PrediccionesTab({
           );
         })}
       </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3 mt-4">
+          <button
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={currentPage === 0}
+            className="px-3 py-1.5 rounded-md text-sm quiniela-display uppercase tracking-wide disabled:opacity-40"
+            style={{ background: 'rgba(31,77,62,0.08)', color: COLORS.pitch }}
+          >
+            Anterior
+          </button>
+          <span className="text-xs" style={{ color: COLORS.pitchLight }}>
+            Página {currentPage + 1} de {totalPages}
+          </span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            disabled={currentPage === totalPages - 1}
+            className="px-3 py-1.5 rounded-md text-sm quiniela-display uppercase tracking-wide disabled:opacity-40"
+            style={{ background: 'rgba(31,77,62,0.08)', color: COLORS.pitch }}
+          >
+            Siguiente
+          </button>
+        </div>
+      )}
 
       <div className="mt-4 flex items-center gap-3">
         <button
