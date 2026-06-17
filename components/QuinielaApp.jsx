@@ -1069,7 +1069,26 @@ function PrediccionesTab({
   const PAGE_SIZE = 8;
   const totalPages = Math.max(1, Math.ceil(matches.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages - 1);
-  const pageMatches = matches.slice(currentPage * PAGE_SIZE, currentPage * PAGE_SIZE + PAGE_SIZE);
+  const sortedMatches = [...matches].sort((a, b) => {
+  // Fecha descendente
+  const fa = a.fecha || '';
+  const fb = b.fecha || '';
+
+  if (fa !== fb) {
+    return fb.localeCompare(fa);
+  }
+
+  // Hora ascendente
+  const ha = a.hora || '';
+  const hb = b.hora || '';
+
+  return ha.localeCompare(hb);
+});
+
+const pageMatches = sortedMatches.slice(
+  currentPage * PAGE_SIZE,
+  currentPage * PAGE_SIZE + PAGE_SIZE
+);
 
   return (
     <div>
