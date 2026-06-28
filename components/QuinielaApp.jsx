@@ -1069,7 +1069,7 @@ function PrediccionesTab({
     );
   }
 
-  // Paginación: 8 partidos por página, manteniendo el orden actual de la lista.
+  // Paginación: 6 partidos por página, manteniendo el orden actual de la lista.
   const PAGE_SIZE = 6;
   const totalPages = Math.max(1, Math.ceil(matches.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages - 1);
