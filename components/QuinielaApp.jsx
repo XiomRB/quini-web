@@ -332,6 +332,8 @@ export default function App() {
       setMyPicks({});
     }
     
+    const player = players.find((p) => p.key === key);
+    
     if (!player) {
       setError('Ese jugador no existe. Pide al organizador que lo registre.');
       setPicksLoading(false);
@@ -1032,7 +1034,7 @@ function PrediccionesTab({
       <div className="py-6 text-center">
         <Target size={28} className="mx-auto mb-3" style={{ color: COLORS.pitch }} />
         <p className="text-sm mb-3" style={{ color: COLORS.pitchDark }}>
-          Escribe tu nombre para cargar (o crear) tus predicciones.
+          Escribe tu nombre para cargar tus predicciones.
         </p>
         <div className="flex gap-2 max-w-xs mx-auto">
           <input
