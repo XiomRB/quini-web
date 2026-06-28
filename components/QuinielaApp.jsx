@@ -21,6 +21,8 @@ import {
 } from 'lucide-react';
 import { storageGet, storageSet } from '../lib/storage';
 
+const SCORE_START_DATE = '2026-06-28';
+
 const COLORS = {
   pitchDark: '#16302A',
   pitch: '#1F4D3E',
@@ -56,6 +58,8 @@ const slugify = (name) =>
 
 // Puntos de UN partido para UNA predicción. null = el partido aún no tiene resultado.
 const matchPoints = (pick, m) => {
+  if (m.fecha && m.fecha < SCORE_START_DATE) return 0;
+  
   if (m.scoreA === null || m.scoreB === null) return null;
   if (!pick || pick.a === '' || pick.b === '' || pick.a === undefined || pick.b === undefined) return 0;
   const pa = Number(pick.a);
@@ -315,6 +319,7 @@ export default function App() {
 
   // ---------- Mis Predicciones ----------
   const enterAs = async (name) => {
+    
     const trimmed = name.trim();
     if (!trimmed) return;
     const key = slugify(trimmed) || Math.random().toString(36).slice(2, 8);
@@ -326,14 +331,11 @@ export default function App() {
     } catch {
       setMyPicks({});
     }
-    if (!players.some((p) => p.key === key)) {
-      const updatedPlayers = [...players, { name: trimmed, key }];
-      try {
-        const r = await storageSet('players', JSON.stringify(updatedPlayers));
-        if (r) setPlayers(updatedPlayers);
-      } catch {
-        setError('No se pudo registrar tu nombre, pero puedes seguir intentando.');
-      }
+    
+    if (!player) {
+      setError('Ese jugador no existe. Pide al organizador que lo registre.');
+      setPicksLoading(false);
+      return;
     }
     setActiveName(trimmed);
     setActiveKey(key);
